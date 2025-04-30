@@ -1,6 +1,7 @@
 import json
 import os
-import requests
+import urllib.request
+import urllib.parse
 import re
 from botocore.exceptions import ClientError
 
@@ -31,49 +32,41 @@ def lambda_handler(event, context):
 
         print("Processing message:", message)
 
-        # 会話履歴を使用
-        bedrock_messages = conversation_history.copy()
-
-        # ユーザーメッセージを追加
-        bedrock_messages.append({
-            "role": "user",
-            "content": message
-        })
+        # シンプルな形で、受け取ったメッセージをそのままプロンプトに設定
+        prompt = message  # 受け取ったメッセージをそのまま使用
 
         # APIに送信するペイロードを構築
         request_payload = {
-            "prompt": bedrock_messages,  # 会話履歴（bedrock_messages）
-            "maxTokens": 512,            # 最大トークン数
-            "stopSequences": [],         # 停止シーケンス
-            "temperature": 0.7,          # 温度パラメータ
-            "top_p": 0.9,                # top_pサンプリング
-            "doSample": True             # サンプリングの使用
+            "prompt": prompt,  # シンプルな形でメッセージをプロンプトとして使用
+            "max_new_tokens": 512,  # 最大トークン数
+            "stopSequences": [],    # 停止シーケンス
+            "temperature": 0.7,     # 温度パラメータ
+            "top_p": 0.9,           # top_pサンプリング
+            "do_sample": True       # サンプリングの使用
         }
 
-        # HTTPリクエストの作成
-        headers = {'Content-Type': 'application/json'}
+        # リクエストの作成（`urllib.request` を使用）
+        data = json.dumps(request_payload).encode('utf-8')  # JSONデータをエンコード
+        req = urllib.request.Request(API_URL + "/generate", data=data, headers={
+            'Content-Type': 'application/json'
+        })
 
-        # FastAPIサーバーにリクエストを送信
-        response = requests.post(API_URL + "/generate", json=request_payload, headers=headers)
+        # APIにリクエストを送信
+        response = urllib.request.urlopen(req)
 
-        # 結果の検証
-        if response.status_code != 200:
-            raise Exception(f"Failed to get valid response from the model: {response.status_code}")
+        # 結果を取得
+        response_data = json.load(response)
 
-        result = response.json()
-
-        if not result.get('generated_text', False):
+        # レスポンスの確認
+        if 'generated_text' not in response_data:
             raise Exception("Failed to get valid response from the model")
 
         # アシスタントの応答（生成されたテキスト）
-        assistant_response = result['generated_text']
-        response_time = result['response_time']  # APIが返した総リクエスト時間を使用
+        assistant_response = response_data['generated_text']
+        response_time = response_data.get('response_time', 'N/A')  # 応答時間がない場合に備えて
 
-        # 会話履歴にアシスタントの応答を追加
-        bedrock_messages.append({
-            "role": "assistant",
-            "content": assistant_response
-        })
+        print(f"Generated response: {assistant_response}")
+        print(f"Response time: {response_time}")
 
         # 成功レスポンスを返す
         return {
@@ -87,7 +80,6 @@ def lambda_handler(event, context):
             "body": json.dumps({
                 "success": True,
                 "response": assistant_response,
-                "conversationHistory": bedrock_messages,
                 "response_time": response_time
             })
         }
