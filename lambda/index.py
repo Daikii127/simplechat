@@ -1,7 +1,7 @@
 import json
 import os
-import urllib.request  # urllibをインポートしてAPIを呼び出す
-import re  # 正規表現モジュールをインポート
+import requests
+import re
 from botocore.exceptions import ClientError
 
 # Lambda コンテキストからリージョンを抽出する関数
@@ -12,8 +12,8 @@ def extract_region_from_arn(arn):
         return match.group(1)
     return "us-east-1"  # デフォルト値
 
-# APIのURL（Google Colabで立てたFastAPIサーバーのURL）
-API_URL = "https://0f49-35-240-154-247.ngrok-free.app"  # 実際のAPI URLに置き換えます
+# APIのURL（環境変数から取得）
+API_URL = os.environ.get("API_URL", "https://0f49-35-240-154-247.ngrok-free.app")  # 環境変数を使う
 
 # モデルID
 MODEL_ID = os.environ.get("MODEL_ID", "us.amazon.nova-lite-v1:0")
@@ -32,38 +32,45 @@ def lambda_handler(event, context):
         print("Processing message:", message)
 
         # 会話履歴を使用
-        messages = conversation_history.copy()
+        bedrock_messages = conversation_history.copy()
 
         # ユーザーメッセージを追加
-        messages.append({
+        bedrock_messages.append({
             "role": "user",
             "content": message
         })
 
         # APIに送信するペイロードを構築
         request_payload = {
-            "message": message,
-            "conversationHistory": conversation_history
+            "prompt": bedrock_messages,  # 会話履歴（bedrock_messages）
+            "maxTokens": 512,            # 最大トークン数
+            "stopSequences": [],         # 停止シーケンス
+            "temperature": 0.7,          # 温度パラメータ
+            "top_p": 0.9,                # top_pサンプリング
+            "doSample": True             # サンプリングの使用
         }
 
-        # JSON形式でエンコード
-        data = json.dumps(request_payload).encode('utf-8')
-
         # HTTPリクエストの作成
-        req = urllib.request.Request(API_URL, data=data, headers={'Content-Type': 'application/json'})
+        headers = {'Content-Type': 'application/json'}
 
-        # Google Colabで立てたFastAPIサーバーにリクエストを送信
-        with urllib.request.urlopen(req) as response:
-            result = json.loads(response.read())
+        # FastAPIサーバーにリクエストを送信
+        response = requests.post(API_URL + "/generate", json=request_payload, headers=headers)
 
         # 結果の検証
-        if not result.get('success', False):
+        if response.status_code != 200:
+            raise Exception(f"Failed to get valid response from the model: {response.status_code}")
+
+        result = response.json()
+
+        if not result.get('generated_text', False):
             raise Exception("Failed to get valid response from the model")
 
-        assistant_response = result['response']
+        # アシスタントの応答（生成されたテキスト）
+        assistant_response = result['generated_text']
+        response_time = result['response_time']  # APIが返した総リクエスト時間を使用
 
         # 会話履歴にアシスタントの応答を追加
-        messages.append({
+        bedrock_messages.append({
             "role": "assistant",
             "content": assistant_response
         })
@@ -80,7 +87,8 @@ def lambda_handler(event, context):
             "body": json.dumps({
                 "success": True,
                 "response": assistant_response,
-                "conversationHistory": messages
+                "conversationHistory": bedrock_messages,
+                "response_time": response_time
             })
         }
 
